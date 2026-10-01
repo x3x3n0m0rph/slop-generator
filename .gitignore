@@ -1,0 +1,7 @@
+openrouter-token.txt
+socks5.txt
+config.yaml
+*.exe
+*.exe~
+.slop-data/
+.gocache/
