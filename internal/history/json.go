@@ -2,6 +2,7 @@
 package history
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,11 +31,28 @@ func (s *JSON[T]) Load() ([]T, error) {
 	if err != nil {
 		return nil, err
 	}
-	var records []T
-	if err = json.Unmarshal(b, &records); err != nil {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("invalid task history: empty file")
+	}
+	if trimmed[0] == '[' {
+		var records []T
+		if err = json.Unmarshal(trimmed, &records); err != nil {
+			return nil, fmt.Errorf("invalid task history: %w", err)
+		}
+		return records, nil
+	}
+	// Read the short-lived versioned envelope as well as the unversioned list.
+	var envelope struct {
+		Tasks []T `json:"tasks"`
+	}
+	if err = json.Unmarshal(trimmed, &envelope); err != nil {
 		return nil, fmt.Errorf("invalid task history: %w", err)
 	}
-	return records, nil
+	if envelope.Tasks == nil {
+		return nil, fmt.Errorf("invalid task history: expected an array or an object containing tasks")
+	}
+	return envelope.Tasks, nil
 }
 
 func (s *JSON[T]) Save(records []T) error {

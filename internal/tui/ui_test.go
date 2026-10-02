@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slop-generator/internal/form"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -9,18 +10,26 @@ import (
 )
 
 type stubController struct {
-	selection [3]string
-	closed    bool
+	selection    [3]string
+	closed       bool
+	fields       []form.Field
+	answers      form.Answers
+	enqueueError error
+	rerunID      string
 }
 
 func (*stubController) Snapshot() ([]task.Task, error) { return nil, nil }
 func (*stubController) Profiles() task.Profiles {
 	return task.Profiles{Pipelines: []string{"python"}, Repositories: []string{"repo"}, Providers: []string{"provider"}}
 }
-func (c *stubController) Enqueue(p, r, v string) error { c.selection = [3]string{p, r, v}; return nil }
-func (*stubController) Cancel(string)                  {}
-func (*stubController) RetryPublish(string) error      { return nil }
-func (c *stubController) Close()                       { c.closed = true }
+func (c *stubController) EnqueueConfigured(p, r, v string, answers form.Answers) error {
+	c.selection = [3]string{p, r, v}
+	c.answers = answers
+	return c.enqueueError
+}
+func (*stubController) Cancel(string)             {}
+func (*stubController) RetryPublish(string) error { return nil }
+func (c *stubController) Close()                  { c.closed = true }
 
 func press(t *testing.T, m ui, code rune) (ui, tea.Cmd) {
 	t.Helper()
@@ -54,3 +63,6 @@ func TestWizardUsesControllerInterface(t *testing.T) {
 		t.Fatal("controller not closed")
 	}
 }
+
+func (c *stubController) Fields(string) ([]form.Field, error) { return c.fields, nil }
+func (c *stubController) Rerun(id string) error               { c.rerunID = id; return nil }

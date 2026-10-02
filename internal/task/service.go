@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"slop-generator/internal/config"
+	"slop-generator/internal/form"
+	"slop-generator/internal/inference"
+	"slop-generator/internal/pipeline"
+	"strings"
 )
 
 // Service owns the task queue and coordinates injected execution dependencies.
@@ -30,7 +34,7 @@ type Service struct {
 
 // New restores history and takes an owned copy of the selected configuration.
 func New(c config.Config, dir string, deps Dependencies) (*Service, error) {
-	if deps.Git == nil || deps.Pipeline == nil || deps.History == nil || deps.NewProvider == nil {
+	if deps.Pipeline == nil || deps.History == nil {
 		return nil, fmt.Errorf("all task dependencies are required")
 	}
 	abs, e := filepath.Abs(dir)
@@ -84,9 +88,39 @@ func (e *Service) Snapshot() ([]Task, error) {
 
 // Enqueue selects profiles and schedules a new task subject to concurrency limits.
 func (e *Service) Enqueue(p, r, v string) error {
+	return e.EnqueueConfigured(p, r, v, nil)
+}
+func (e *Service) EnqueueConfigured(p, r, v string, answers form.Answers) error {
 	pc, ok := e.cfg.Pipelines[p]
 	if !ok {
 		return fmt.Errorf("unknown pipeline")
+	}
+	pc = clonePipeline(pc)
+	requested, err := e.deps.Pipeline.Fields(pc)
+	if err != nil {
+		return err
+	}
+	allowed := map[string]form.Field{}
+	for _, field := range requested {
+		allowed[field.ID] = field
+	}
+	for key, value := range answers {
+		field, ok := allowed[key]
+		if !ok {
+			return fmt.Errorf("field %s is not requested by this pipeline", key)
+		}
+		if err := field.Validate(value); err != nil {
+			return err
+		}
+		i := strings.LastIndex(key, ".")
+		if i < 0 {
+			return fmt.Errorf("invalid field ID")
+		}
+		id, fieldName := key[:i], key[i+1:]
+		if pc.Stages[id] == nil {
+			pc.Stages[id] = map[string]string{}
+		}
+		pc.Stages[id][fieldName] = value
 	}
 	rc, ok := e.cfg.Repositories[r]
 	if !ok {
@@ -96,7 +130,14 @@ func (e *Service) Enqueue(p, r, v string) error {
 	if !ok {
 		return fmt.Errorf("unknown provider")
 	}
-	key, err := e.deps.Git.Identity(context.Background(), rc)
+	fields, err := e.deps.Pipeline.Fields(pc)
+	if err != nil {
+		return err
+	}
+	if len(fields) != 0 {
+		return fmt.Errorf("stage configuration incomplete")
+	}
+	key, err := e.deps.Pipeline.Identity(context.Background(), pipeline.Runtime{Repo: rc})
 	if err != nil {
 		return fmt.Errorf("cannot inspect repository: %w", err)
 	}
@@ -105,7 +146,7 @@ func (e *Service) Enqueue(p, r, v string) error {
 		return err
 	}
 	id := time.Now().UTC().Format("20060102T150405") + "-" + hex.EncodeToString(raw)
-	t := &Task{ID: id, PipelineName: p, RepoName: r, ProviderName: v, Pipeline: pc, Repo: rc, Provider: vc, Python: e.cfg.Python, RepoKey: key, Status: "queued", Created: time.Now(), Updated: time.Now()}
+	t := &Task{ID: id, PipelineName: p, RepoName: r, ProviderName: v, Pipeline: pc, Repo: rc, Provider: vc, StageTotal: e.deps.Pipeline.StageCount(pc), RepoKey: key, Status: "queued", Created: time.Now(), Updated: time.Now()}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closing {
@@ -145,6 +186,15 @@ func (e *Service) update(t *Task, step string, fn func()) {
 	t.Step = step
 	t.Updated = time.Now()
 	t.Events = append(t.Events, time.Now().Format(time.RFC3339)+" "+step)
+	e.saveLocked()
+}
+
+// record persists progress without replacing the active stage or adding log noise.
+func (e *Service) record(t *Task, fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	fn()
+	t.Updated = time.Now()
 	e.saveLocked()
 }
 func (e *Service) execute(ctx context.Context, t *Task) {
@@ -198,10 +248,8 @@ func (e *Service) RetryPublish(id string) error {
 			if t.SHA == "" || t.Status == "succeeded" || t.Status == "running" || t.Status == "queued" {
 				return fmt.Errorf("no publication or source pull to retry")
 			}
-			if !t.Published {
-				if _, err := os.Stat(t.Work); err != nil {
-					return fmt.Errorf("saved working copy is unavailable")
-				}
+			if err := e.deps.Pipeline.ValidateResume(pipeline.Runtime{ID: t.ID, DataDir: e.dir, State: pipeline.State{Work: t.Work, SHA: t.SHA, Published: t.Published}}); err != nil {
+				return err
 			}
 			t.Status = "queued"
 			t.Error = ""
@@ -228,4 +276,78 @@ func (e *Service) Close() {
 	e.saveLocked()
 	e.mu.Unlock()
 	e.wg.Wait()
+}
+
+func (e *Service) Fields(name string) ([]form.Field, error) {
+	p, ok := e.cfg.Pipelines[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown pipeline")
+	}
+	return e.deps.Pipeline.Fields(p)
+}
+func (e *Service) Rerun(id string) error {
+	e.mu.Lock()
+	var old Task
+	found := false
+	for _, t := range e.tasks {
+		if t.ID == id {
+			old = publicTask(*t)
+			found = true
+			break
+		}
+	}
+	e.mu.Unlock()
+	if !found {
+		return fmt.Errorf("task not found")
+	}
+	provider, ok := e.cfg.Providers[old.ProviderName]
+	if !ok {
+		return fmt.Errorf("provider profile unavailable")
+	}
+	raw := make([]byte, 8)
+	if _, err := rand.Read(raw); err != nil {
+		return err
+	}
+	old.ID = time.Now().UTC().Format("20060102T150405") + "-" + hex.EncodeToString(raw)
+	// Reuse the saved public settings, resolving only credentials from the profile.
+	old.Provider.APIKey = provider.APIKey
+	old.Provider.KeyEnv = provider.KeyEnv
+	old.Provider.KeyFile = provider.KeyFile
+	old.Provider.SOCKS5 = provider.SOCKS5
+	old.Provider.SOCKS5File = provider.SOCKS5File
+	old.Status = "queued"
+	old.Step = ""
+	old.Error = ""
+	old.Work = ""
+	old.SHA = ""
+	old.Published = false
+	old.Completed = 0
+	old.Commits = nil
+	old.Events = nil
+	old.Usage = inference.Usage{}
+	old.UsageKnown = false
+	old.UsageMissing = false
+	old.Created = time.Now()
+	old.Updated = old.Created
+	fields, err := e.deps.Pipeline.Fields(old.Pipeline)
+	if err != nil {
+		return err
+	}
+	if len(fields) != 0 {
+		return fmt.Errorf("saved configuration incomplete")
+	}
+	key, err := e.deps.Pipeline.Identity(context.Background(), pipeline.Runtime{Repo: old.Repo})
+	if err != nil {
+		return err
+	}
+	old.RepoKey = key
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closing {
+		return fmt.Errorf("application is closing")
+	}
+	e.tasks = append(e.tasks, &old)
+	e.saveLocked()
+	e.scheduleLocked()
+	return nil
 }

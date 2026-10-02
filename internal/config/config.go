@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -32,19 +31,25 @@ type Repository struct {
 	AuthorEmail   string `yaml:"author_email"`
 	PullAfterPush *bool  `yaml:"pull_after_push"`
 }
-type Job struct {
-	ID          string `yaml:"id"`
-	Instruction string `yaml:"instruction"`
-	Extension   string `yaml:"extension"`
+type PipelineSettings struct {
+	MaxRetries *int   `yaml:"max_retries"`
+	CommitMode string `yaml:"commit_mode"`
 }
 type Pipeline struct {
-	Type        string `yaml:"type"`
-	Instruction string `yaml:"instruction"`
-	Jobs        []Job  `yaml:"jobs"`
+	Definition string                       `yaml:"definition"`
+	Config     PipelineSettings             `yaml:"config"`
+	Stages     map[string]map[string]string `yaml:"stages"`
 }
+
+func (p Pipeline) Retries() int {
+	if p.Config.MaxRetries == nil {
+		return 3
+	}
+	return *p.Config.MaxRetries
+}
+
 type Config struct {
 	Parallelism  int                   `yaml:"parallelism"`
-	Python       string                `yaml:"python"`
 	Providers    map[string]Provider   `yaml:"providers"`
 	Repositories map[string]Repository `yaml:"repositories"`
 	Pipelines    map[string]Pipeline   `yaml:"pipelines"`
@@ -67,11 +72,9 @@ func resolve(base, p string) string {
 	return filepath.Join(base, p)
 }
 
-var validID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
-
 func SafeRelative(p string) bool {
 	p = strings.ReplaceAll(p, "\\", "/")
-	if p == "" || filepath.IsAbs(p) || strings.Contains(p, ":") {
+	if p == "" || strings.HasPrefix(p, "/") || filepath.IsAbs(p) || strings.Contains(p, ":") {
 		return false
 	}
 	for _, s := range strings.Split(p, "/") {
@@ -96,9 +99,6 @@ func Load(path string) (Config, error) {
 	}
 	if c.Parallelism < 1 {
 		return c, At("parallelism", fmt.Errorf("parallelism must be positive"), "Укажите положительное число параллельных тасок.")
-	}
-	if c.Python == "" {
-		c.Python = "python"
 	}
 	if len(c.Providers) == 0 || len(c.Repositories) == 0 || len(c.Pipelines) == 0 {
 		return c, fmt.Errorf("providers, repositories and pipelines are required")
@@ -153,29 +153,17 @@ func Load(path string) (Config, error) {
 		c.Repositories[name] = r
 	}
 	for name, p := range c.Pipelines {
-		if p.Type != "python" && p.Type != "text" {
-			return c, At("pipelines."+name+".type", fmt.Errorf("pipeline %s: unknown type", name), "Поддерживаются python и text.")
+		if p.Definition == "" {
+			return c, At("pipelines."+name+".definition", fmt.Errorf("pipeline definition is required"), "Choose a code-defined pipeline.")
 		}
-		if len(p.Jobs) == 0 {
-			return c, At("pipelines."+name+".jobs", fmt.Errorf("pipeline %s: no jobs", name), "Добавьте хотя бы одно задание.")
+		if p.Retries() < 0 {
+			return c, fmt.Errorf("pipeline %s: max_retries must not be negative", name)
 		}
-		seen := map[string]bool{}
-		for i, j := range p.Jobs {
-			if !validID.MatchString(j.ID) || seen[j.ID] || strings.TrimSpace(j.Instruction) == "" {
-				return c, At(fmt.Sprintf("pipelines.%s.jobs[%d]", name, i), fmt.Errorf("pipeline %s: invalid or duplicate job", name), "Задание должно иметь непустую инструкцию и уникальный id из букв, цифр, _ и -.")
-			}
-			seen[j.ID] = true
-			if p.Type == "python" {
-				j.Extension = ".py"
-			} else {
-				if j.Extension == "" {
-					j.Extension = ".txt"
-				}
-				if j.Extension != ".txt" && j.Extension != ".md" {
-					return c, At(fmt.Sprintf("pipelines.%s.jobs[%d].extension", name, i), fmt.Errorf("pipeline %s: unsupported extension", name), "Для текста используйте .txt или .md.")
-				}
-			}
-			p.Jobs[i] = j
+		if p.Config.CommitMode == "" {
+			p.Config.CommitMode = "pipeline"
+		}
+		if p.Config.CommitMode != "pipeline" && p.Config.CommitMode != "stages" {
+			return c, fmt.Errorf("pipeline %s: invalid commit_mode", name)
 		}
 		c.Pipelines[name] = p
 	}

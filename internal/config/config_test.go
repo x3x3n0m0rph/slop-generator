@@ -23,9 +23,10 @@ repositories:
     branch: main
 pipelines:
   test:
-    type: python
-    jobs:
-      - id: one
+    definition: python-functions
+    stages:
+      insertion-sort.generate:
+        filename: one.py
         instruction: write
 `
 	p := filepath.Join(dir, "config.yaml")
@@ -34,27 +35,23 @@ pipelines:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Parallelism != 2 || c.Providers["test"].MaxTokens != 4096 || c.Repositories["test"].Remote != "origin" || c.Pipelines["test"].Jobs[0].Extension != ".py" || c.Providers["test"].KeyFile != filepath.Join(dir, "token.txt") {
+	if c.Parallelism != 2 || c.Providers["test"].MaxTokens != 4096 || c.Repositories["test"].Remote != "origin" || c.Pipelines["test"].Stages["insertion-sort.generate"]["filename"] != "one.py" || c.Providers["test"].KeyFile != filepath.Join(dir, "token.txt") {
 		t.Fatalf("%+v", c)
 	}
 	if !c.Repositories["test"].ShouldPull() {
 		t.Fatal("pull_after_push must default to true")
 	}
-	for _, bad := range []string{base + "unknown: true\n", strings.Replace(base, "type: python", "type: other", 1), strings.Replace(base, "branch: main", "branch: main\n    output_dir: ../outside", 1), strings.Replace(base, "key_file: token.txt", "key_file: token.txt\n    key_env: TOKEN", 1)} {
+	for _, bad := range []string{base + "unknown: true\n", strings.Replace(base, "definition: python-functions", "definition: ", 1), strings.Replace(base, "branch: main", "branch: main\n    output_dir: ../outside", 1), strings.Replace(base, "key_file: token.txt", "key_file: token.txt\n    key_env: TOKEN", 1)} {
 		os.WriteFile(p, []byte(bad), 0600)
 		if _, err := Load(p); err == nil {
 			t.Fatal("invalid config accepted")
 		}
 	}
-	os.WriteFile(p, []byte(base+"      - id: one\n        instruction: again\n"), 0600)
-	if _, err := Load(p); err == nil {
-		t.Fatal("duplicate job accepted")
-	}
 
 	inline := strings.Replace(base, "key_file: token.txt", "api_key: inline-test-key", 1)
 	os.WriteFile(p, []byte(inline), 0600)
 	c, err = Load(p)
-	if err != nil || c.Providers["test"].APIKey != "inline-test-key" || len(c.Pipelines["test"].Jobs) != 1 {
+	if err != nil || c.Providers["test"].APIKey != "inline-test-key" || len(c.Pipelines["test"].Stages) != 1 {
 		t.Fatal("single-file configuration failed", err)
 	}
 	if err := os.WriteFile(p, []byte(strings.Replace(inline, "branch: main", "branch: main\n    pull_after_push: false", 1)), 0600); err != nil {
@@ -65,16 +62,16 @@ pipelines:
 		t.Fatalf("explicit pull disable ignored: %v", err)
 	}
 	for _, bad := range []string{
+		strings.Replace(inline, "definition: python-functions", "type: python", 1),
+		strings.Replace(inline, "definition: python-functions", "definition: python-functions\n    config:\n      max_retries: -1", 1),
 		strings.Replace(inline, "api_key: inline-test-key", "api_key: inline-test-key\n    key_env: TOKEN", 1),
-		strings.Replace(inline, "    jobs:\n      - id: one\n        instruction: write", "    jobs: []", 1),
-		strings.Replace(inline, "    jobs:\n      - id: one\n        instruction: write", "    jobs_file: old-jobs.yaml", 1),
-		strings.Replace(inline, "        instruction: write", "        instruction: write\n        unknown: value", 1),
 	} {
 		os.WriteFile(p, []byte(bad), 0600)
 		if _, err := Load(p); err == nil {
-			t.Fatal("invalid inline configuration accepted")
+			t.Fatal("invalid configuration accepted")
 		}
 	}
+
 	if err := os.WriteFile(filepath.Join(dir, "not-a-directory"), []byte("file"), 0600); err != nil {
 		t.Fatal(err)
 	}

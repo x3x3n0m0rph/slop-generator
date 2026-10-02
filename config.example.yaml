@@ -1,5 +1,4 @@
 parallelism: 2
-python: python
 
 providers:
   openrouter:
@@ -22,24 +21,41 @@ repositories:
     # author_name: Slop Generator
     # author_email: slop@example.com
 
+# Stage order and types are defined in Go. These settings configure instances.
+# Omit filename/instruction to have the task wizard request them.
 pipelines:
   python-functions:
-    type: python
-    instruction: Implement the requested short Python function. Use the standard library only.
-    jobs:
-      - id: insertion-sort
-        instruction: Implement insertion_sort(values), returning a sorted copy of the input list without using sorted() or list.sort().
-      - id: read-lines
-        instruction: Implement read_lines(path), reading a UTF-8 file and returning its lines without trailing newline characters.
-      - id: quadratic
-        instruction: Implement real_roots(a, b, c) for a quadratic equation, returning a sorted list of unique real roots. Handle linear and degenerate cases explicitly.
+    definition: python-functions
+    config:
+      max_retries: 3
+      commit_mode: pipeline
+    stages:
+      insertion-sort.generate:
+        filename: insertion-sort.py
+        system_instruction: Use the Python standard library only.
+        instruction: Implement insertion_sort(values), returning a sorted copy without sorted() or list.sort().
+      insertion-sort.validate:
+        python: python
+      read-lines.generate:
+        filename: read-lines.py
+        instruction: Implement read_lines(path), reading UTF-8 lines without trailing newline characters.
+      quadratic.generate:
+        filename: quadratic.py
+        instruction: Implement real_roots(a, b, c), returning sorted unique real roots; handle linear and degenerate cases.
   short-texts:
-    type: text
-    instruction: Write clear, concise text addressing the requested topic.
-    jobs:
-      - id: sorting-guide
-        extension: .md
-        instruction: Write a short Markdown explanation of insertion sort, including its complexity and a worked example.
-      - id: file-reading
-        extension: .txt
-        instruction: Explain UTF-8 text file reading and newline handling in Python in three short paragraphs.
+    definition: short-texts
+    config:
+      max_retries: 3
+      commit_mode: pipeline
+    stages:
+      sorting-guide.generate:
+        filename: sorting-guide.md
+        instruction: Explain insertion sort, its complexity, and a worked example in Markdown.
+      file-reading.generate:
+        filename: file-reading.txt
+        instruction: Explain UTF-8 file reading and newline handling in Python in three short paragraphs.
+  documentation-generation:
+    definition: documentation
+    config:
+      max_retries: 3
+      commit_mode: pipeline

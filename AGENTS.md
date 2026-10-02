@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-`cmd/slop-generator/` contains CLI flags, startup diagnostics, and dependency wiring. `internal/` separates configuration (`config`), API clients (`inference`), generation and Python validation (`pipeline`), Git operations (`gitrepo`), JSON persistence (`history`), scheduling (`task`), and terminal UI (`tui`). Unit tests sit beside source files as `*_test.go`; `tests/integration/` contains the optional live API test. `config.example.yaml` documents configuration. `playground/` is a local scratch area.
+`cmd/slop-generator/` contains CLI flags, startup diagnostics, and dependency wiring. `internal/` separates configuration (`config`), API clients (`inference`), typed composition and Git lifecycle (`pipeline`), individual steps (`stage`), UI-independent forms (`form`), Git operations (`gitrepo`), JSON persistence (`history`), scheduling (`task`), and terminal UI (`tui`). Unit tests sit beside source files as `*_test.go`; `tests/integration/` contains the optional live API test. `config.example.yaml` documents configuration. `playground/` is a local scratch area.
 
-Keep interfaces with their consumers and inject concrete dependencies through the command entry point. Keep commit and publication orchestration in `task`.
+Keep interfaces with their consumers and inject concrete dependencies through the command entry point. Keep commit and publication orchestration in `pipeline`; `task` schedules and persists individual runs.
 
 ## Build, Test, and Development Commands
 

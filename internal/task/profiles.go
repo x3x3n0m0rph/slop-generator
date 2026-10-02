@@ -28,7 +28,7 @@ func cloneConfig(c config.Config) config.Config {
 	}
 	c.Pipelines = maps.Clone(c.Pipelines)
 	for name, p := range c.Pipelines {
-		p.Jobs = slices.Clone(p.Jobs)
+		p = clonePipeline(p)
 		c.Pipelines[name] = p
 	}
 	return c
@@ -37,7 +37,8 @@ func cloneConfig(c config.Config) config.Config {
 func publicTask(t Task) Task {
 	t.Repo = cloneRepository(t.Repo)
 	t.Provider = config.Provider{BaseURL: t.Provider.BaseURL, Model: t.Provider.Model, MaxTokens: t.Provider.MaxTokens, Timeout: t.Provider.Timeout}
-	t.Pipeline.Jobs = slices.Clone(t.Pipeline.Jobs)
+	t.Pipeline = clonePipeline(t.Pipeline)
+	t.Commits = slices.Clone(t.Commits)
 	t.Events = slices.Clone(t.Events)
 	return t
 }
@@ -48,4 +49,19 @@ func cloneRepository(r config.Repository) config.Repository {
 		r.PullAfterPush = &value
 	}
 	return r
+}
+
+func clonePipeline(p config.Pipeline) config.Pipeline {
+	p.Stages = maps.Clone(p.Stages)
+	if p.Stages == nil {
+		p.Stages = map[string]map[string]string{}
+	}
+	for id, v := range p.Stages {
+		p.Stages[id] = maps.Clone(v)
+	}
+	if p.Config.MaxRetries != nil {
+		n := *p.Config.MaxRetries
+		p.Config.MaxRetries = &n
+	}
+	return p
 }

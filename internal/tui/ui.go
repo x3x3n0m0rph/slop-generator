@@ -2,7 +2,10 @@
 package tui
 
 import (
+	"strings"
 	"time"
+
+	"slop-generator/internal/form"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -11,6 +14,7 @@ import (
 
 type tickMsg struct{}
 type actionMsg struct{ err error }
+type enqueueMsg struct{ err error }
 type closedMsg struct{}
 type ui struct {
 	engine                       Controller
@@ -23,6 +27,10 @@ type ui struct {
 	picked                       [3]string
 	notice                       string
 	closing                      bool
+	fields                       []form.Field
+	answers                      form.Answers
+	fieldIndex                   int
+	value                        string
 }
 
 func tick() tea.Cmd {
@@ -53,6 +61,27 @@ func (m *ui) pickChoices() {
 }
 func (m ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		if m.creating && m.stage == 3 {
+			value := strings.ReplaceAll(msg.Content, "\r\n", "\n")
+			if m.fields[m.fieldIndex].Kind != form.Multiline {
+				value = strings.ReplaceAll(value, "\n", " ")
+			}
+			m.value += value
+		}
+	case enqueueMsg:
+		if msg.err != nil {
+			m.notice = msg.err.Error()
+			if len(m.fields) > 0 {
+				m.creating = true
+				m.stage = 3
+				m.fieldIndex = len(m.fields) - 1
+				m.value = m.answers[m.fields[m.fieldIndex].ID]
+			}
+		} else {
+			m.notice = "Task queued"
+		}
+		m.refresh()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -79,6 +108,78 @@ func (m ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { m.engine.Close(); return closedMsg{} }
 		}
 		if m.creating {
+			if m.stage == 3 {
+				switch key {
+				case "shift+tab":
+					if m.fieldIndex > 0 {
+						m.answers[m.fields[m.fieldIndex].ID] = m.value
+						m.fieldIndex--
+						m.value = m.answers[m.fields[m.fieldIndex].ID]
+					}
+				case "up", "down", "left", "right", "space":
+					field := m.fields[m.fieldIndex]
+					if field.Kind == form.Boolean {
+						if m.value == "true" {
+							m.value = "false"
+						} else {
+							m.value = "true"
+						}
+					} else if field.Kind == form.Choice && len(field.Options) > 0 {
+						index := 0
+						for i, v := range field.Options {
+							if v == m.value {
+								index = i
+								break
+							}
+						}
+						delta := 1
+						if key == "up" || key == "left" {
+							delta = -1
+						}
+						m.value = field.Options[(index+delta+len(field.Options))%len(field.Options)]
+					} else if key == "space" {
+						m.value += " "
+					}
+				case "esc":
+					m.creating = false
+				case "backspace":
+					r := []rune(m.value)
+					if len(r) > 0 {
+						m.value = string(r[:len(r)-1])
+					}
+				case "enter", "ctrl+enter", "ctrl+s":
+					field := m.fields[m.fieldIndex]
+					if field.Kind == form.Multiline && key == "enter" {
+						m.value += "\n"
+						return m, nil
+					}
+					if err := field.Validate(m.value); err != nil {
+						m.notice = err.Error()
+						return m, nil
+					}
+					m.answers[field.ID] = m.value
+					m.fieldIndex++
+					if m.fieldIndex == len(m.fields) {
+						m.creating = false
+						picked := m.picked
+						answers := m.answers
+						return m, func() tea.Msg {
+							return enqueueMsg{m.engine.EnqueueConfigured(picked[0], picked[1], picked[2], answers)}
+						}
+					}
+					m.value = m.fields[m.fieldIndex].Value
+					if v, ok := m.answers[m.fields[m.fieldIndex].ID]; ok {
+						m.value = v
+					}
+				default:
+					if msg.Text != "" {
+						m.value += msg.Text
+					} else if key == "space" {
+						m.value += " "
+					}
+				}
+				return m, nil
+			}
 			switch key {
 			case "esc":
 				m.creating = false
@@ -87,12 +188,29 @@ func (m ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "down", "j":
 				m.choice = min(len(m.choices)-1, m.choice+1)
 			case "enter":
+				if len(m.choices) == 0 {
+					m.notice = "No profiles available"
+					return m, nil
+				}
 				m.picked[m.stage] = m.choices[m.choice]
 				m.stage++
 				if m.stage == 3 {
+					fields, err := m.engine.Fields(m.picked[0])
+					if err != nil {
+						m.notice = err.Error()
+						m.creating = false
+						return m, nil
+					}
+					m.fields = fields
+					m.answers = form.Answers{}
+					m.fieldIndex = 0
+					if len(fields) != 0 {
+						m.value = fields[0].Value
+						return m, nil
+					}
 					m.creating = false
 					picked := m.picked
-					return m, func() tea.Msg { return actionMsg{m.engine.Enqueue(picked[0], picked[1], picked[2])} }
+					return m, func() tea.Msg { return enqueueMsg{m.engine.EnqueueConfigured(picked[0], picked[1], picked[2], nil)} }
 				}
 				m.pickChoices()
 			}
@@ -127,7 +245,7 @@ func (m ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if len(m.tasks) > 0 {
 				t := m.tasks[m.selected]
-				return m, func() tea.Msg { return actionMsg{m.engine.Enqueue(t.PipelineName, t.RepoName, t.ProviderName)} }
+				return m, func() tea.Msg { return actionMsg{m.engine.Rerun(t.ID)} }
 			}
 		case "p":
 			if len(m.tasks) > 0 {
@@ -144,7 +262,9 @@ func (m ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 type Controller interface {
 	Snapshot() ([]task.Task, error)
 	Profiles() task.Profiles
-	Enqueue(pipeline, repository, provider string) error
+	EnqueueConfigured(pipeline, repository, provider string, answers form.Answers) error
+	Fields(string) ([]form.Field, error)
+	Rerun(string) error
 	Cancel(id string)
 	RetryPublish(id string) error
 	Close()

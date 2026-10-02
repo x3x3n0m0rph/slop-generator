@@ -115,16 +115,36 @@ func (Client) Publish(ctx context.Context, work, branch, sha string) error {
 }
 
 // Commit stages only the task output and records one commit in the private copy.
-func (Client) Commit(ctx context.Context, work, output, message, hooksDir string) (string, error) {
-	rel, err := filepath.Rel(work, output)
+func (Client) Commit(ctx context.Context, work string, paths []string, message, hooksDir string) (string, error) {
+	for _, path := range paths {
+		if !config.SafeRelative(path) {
+			return "", fmt.Errorf("unsafe commit path")
+		}
+	}
+	if len(paths) == 0 {
+		return "", fmt.Errorf("commit paths required")
+	}
+	args := append([]string{"add", "--"}, paths...)
+	if _, err := run(ctx, work, args...); err != nil {
+		return "", err
+	}
+	diff, err := run(ctx, work, "diff", "--cached", "--name-only")
 	if err != nil {
 		return "", err
 	}
-	if _, err = run(ctx, work, "add", "--", rel); err != nil {
-		return "", err
+	if diff == "" {
+		return run(ctx, work, "rev-parse", "HEAD")
 	}
 	if _, err = run(ctx, work, "-c", "core.hooksPath="+hooksDir, "commit", "-m", message); err != nil {
 		return "", err
 	}
 	return run(ctx, work, "rev-parse", "HEAD")
+}
+
+func (Client) Head(ctx context.Context, work string) (string, error) {
+	return run(ctx, work, "rev-parse", "HEAD")
+}
+func (Client) Clean(ctx context.Context, work string) (bool, error) {
+	s, err := run(ctx, work, "status", "--porcelain")
+	return s == "", err
 }

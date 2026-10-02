@@ -3,22 +3,26 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"slop-generator/internal/config"
+	"slop-generator/internal/form"
 	"slop-generator/internal/gitrepo"
 	"slop-generator/internal/history"
 	"slop-generator/internal/inference"
 	"slop-generator/internal/pipeline"
+	"slop-generator/internal/stage"
 )
 
 func mustGit(t *testing.T, dir string, args ...string) string {
@@ -76,7 +80,7 @@ func setupEngine(t *testing.T, r config.Repository, pipeline config.Pipeline, ha
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	t.Setenv("SLOP_TEST_KEY", "super-secret")
-	c := config.Config{Parallelism: 2, Python: "python", Providers: map[string]config.Provider{"test": {BaseURL: server.URL, Model: "test", KeyEnv: "SLOP_TEST_KEY", MaxTokens: 100, Timeout: 2}}, Repositories: map[string]config.Repository{"test": r}, Pipelines: map[string]config.Pipeline{"test": pipeline}}
+	c := config.Config{Parallelism: 2, Providers: map[string]config.Provider{"test": {BaseURL: server.URL, Model: "test", KeyEnv: "SLOP_TEST_KEY", MaxTokens: 100, Timeout: 2}}, Repositories: map[string]config.Repository{"test": r}, Pipelines: map[string]config.Pipeline{"test": pipeline}}
 	e, err := newTestService(c, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -103,13 +107,13 @@ func TestTextTaskPublishesAndPreservesSource(t *testing.T) {
 	sha := mustGit(t, r.Path, "rev-parse", "HEAD")
 	os.WriteFile(filepath.Join(r.Path, "dirty.txt"), []byte("leave me"), 0600)
 	before := mustGit(t, r.Path, "status", "--porcelain")
-	e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".md"}, {ID: "two", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, r *http.Request) { answer(w, "generated text") })
+	e := setupEngine(t, r, testPipeline("text", "one", "write", ".md", "two", "write", ".txt"), func(w http.ResponseWriter, r *http.Request) { answer(w, "generated text") })
 	provider := e.cfg.Providers["test"]
 	provider.KeyEnv = ""
 	provider.APIKey = "super-secret"
 	e.cfg.Providers["test"] = provider
 	task := waitTask(t, e, enqueue(t, e))
-	if task.Status != "succeeded" || task.Completed != 2 || task.Usage.Total != 10 {
+	if task.Status != "succeeded" || task.Completed != 4 || task.Usage.Total != 10 {
 		t.Fatalf("%+v", task)
 	}
 	if mustGit(t, r.Path, "rev-parse", "HEAD") != sha || mustGit(t, r.Path, "status", "--porcelain") != before {
@@ -145,7 +149,7 @@ func TestPythonRepairAndFailure(t *testing.T) {
 			r, remote := gitFixture(t)
 			initial := mustGit(t, remote, "rev-parse", "main")
 			var count atomic.Int32
-			e := setupEngine(t, r, config.Pipeline{Type: "python", Jobs: []config.Job{{ID: "function", Instruction: "write", Extension: ".py"}}}, func(w http.ResponseWriter, r *http.Request) {
+			e := setupEngine(t, r, testPipeline("python", "function", "write", ".py"), func(w http.ResponseWriter, r *http.Request) {
 				n := count.Add(1)
 				if success && n > 1 {
 					var b struct {
@@ -185,7 +189,7 @@ func TestGitPreflightAndRemoteRace(t *testing.T) {
 		mustGit(t, r.Path, "checkout", "--detach", old)
 		mustGit(t, r.Path, "branch", "-f", "main", old)
 		var calls atomic.Int32
-		e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); answer(w, "text") })
+		e := setupEngine(t, r, testPipeline("text", "one", "write", ".txt"), func(w http.ResponseWriter, r *http.Request) { calls.Add(1); answer(w, "text") })
 		task := waitTask(t, e, enqueue(t, e))
 		if task.Status != "failed" || calls.Load() != 0 || !strings.Contains(task.Error, "behind") {
 			t.Fatalf("%+v", task)
@@ -194,7 +198,7 @@ func TestGitPreflightAndRemoteRace(t *testing.T) {
 	})
 	t.Run("remote changed", func(t *testing.T) {
 		r, remote := gitFixture(t)
-		e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, req *http.Request) {
+		e := setupEngine(t, r, testPipeline("text", "one", "write", ".txt"), func(w http.ResponseWriter, req *http.Request) {
 			commitFile(t, r.Path, "external.txt")
 			mustGit(t, r.Path, "push", "origin", "main")
 			answer(w, "text")
@@ -217,7 +221,7 @@ func TestEmptyResponseAndCancellation(t *testing.T) {
 			r, remote := gitFixture(t)
 			initial := mustGit(t, remote, "rev-parse", "main")
 			started := make(chan struct{})
-			e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, r *http.Request) {
+			e := setupEngine(t, r, testPipeline("text", "one", "write", ".txt"), func(w http.ResponseWriter, r *http.Request) {
 				io.Copy(io.Discard, r.Body)
 				close(started)
 				if cancel {
@@ -249,7 +253,10 @@ func TestEmptyResponseAndCancellation(t *testing.T) {
 func TestRecoveryMarksActiveTasksInterrupted(t *testing.T) {
 	dir := t.TempDir()
 	tasks := []Task{{ID: "one", Status: "running"}, {ID: "two", Status: "queued"}}
-	b, _ := json.Marshal(tasks)
+	b, _ := json.Marshal(struct {
+		Version int    `json:"version"`
+		Tasks   []Task `json:"tasks"`
+	}{2, tasks})
 	os.WriteFile(filepath.Join(dir, "history.json"), b, 0600)
 	e, err := newTestService(config.Config{Parallelism: 2}, dir)
 	if err != nil {
@@ -269,7 +276,7 @@ func TestSchedulerParallelismAndSameRepoQueue(t *testing.T) {
 	other, _ := gitFixture(t)
 	started := make(chan struct{}, 4)
 	release := make(chan struct{})
-	e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, r *http.Request) {
+	e := setupEngine(t, r, testPipeline("text", "one", "write", ".txt"), func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		started <- struct{}{}
 		select {
@@ -315,7 +322,7 @@ func TestRetryPublicationWithoutRegeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); answer(w, "text") })
+	e := setupEngine(t, r, testPipeline("text", "one", "write", ".txt"), func(w http.ResponseWriter, r *http.Request) { calls.Add(1); answer(w, "text") })
 	id := enqueue(t, e)
 	task := waitTask(t, e, id)
 	if task.Status != "failed" || task.SHA == "" {
@@ -338,7 +345,97 @@ func newTestService(c config.Config, dir string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return New(c, dir, Dependencies{Git: gitrepo.Client{}, Pipeline: pipeline.Builtin{}, History: store,
-		NewProvider: func(c config.Provider) (Provider, error) { return inference.NewHTTP(c) },
-	})
+	definitions := map[string]pipeline.Definition{}
+	for _, p := range c.Pipelines {
+		var ids []string
+		for id := range p.Stages {
+			if strings.HasSuffix(id, ".generate") {
+				ids = append(ids, strings.TrimSuffix(id, ".generate"))
+			}
+		}
+		sort.Strings(ids)
+		definitions[p.Definition] = testDefinition{ids: ids, python: p.Definition == "test-python"}
+	}
+	return New(c, dir, Dependencies{Pipeline: &pipeline.Engine{Git: gitrepo.Client{}, Definitions: definitions, NewProvider: func(c config.Provider) (pipeline.Provider, error) { return inference.NewHTTP(c) }}, History: store})
+}
+
+type testDefinition struct {
+	ids    []string
+	python bool
+}
+
+func (d testDefinition) StageCount(p config.Pipeline) int {
+	n := 2 * len(d.ids)
+	if p.Config.CommitMode == "stages" {
+		n++
+	}
+	return n
+}
+func (d testDefinition) Fields(p config.Pipeline) ([]form.Field, error) {
+	allowed := map[string]bool{}
+	var fields []form.Field
+	for _, id := range d.ids {
+		gen := id + ".generate"
+		write := id + ".write"
+		if d.python {
+			write = id + ".validate"
+		}
+		allowed[gen] = true
+		allowed[write] = true
+		fs, err := stage.GenerationFields(gen, p.Stages[gen])
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, fs...)
+		if d.python {
+			if _, err := stage.ValidationFields(write, p.Stages[write]); err != nil {
+				return nil, err
+			}
+		} else if len(p.Stages[write]) != 0 {
+			return nil, fmt.Errorf("unknown fixture stage settings")
+		}
+	}
+	for id := range p.Stages {
+		if !allowed[id] {
+			return nil, fmt.Errorf("unknown fixture stage %s", id)
+		}
+	}
+	return fields, nil
+}
+func (d testDefinition) Build(p config.Pipeline, r pipeline.Resources) (pipeline.Chain[stage.Artifacts, stage.Artifacts, stage.Unit], error) {
+	fields, err := d.Fields(p)
+	if err != nil {
+		return pipeline.Chain[stage.Artifacts, stage.Artifacts, stage.Unit]{}, err
+	}
+	if len(fields) != 0 {
+		return pipeline.Chain[stage.Artifacts, stage.Artifacts, stage.Unit]{}, fmt.Errorf("stage configuration incomplete")
+	}
+	var chain pipeline.Chain[stage.Artifacts, stage.Artifacts, stage.Unit]
+	for i, id := range d.ids {
+		genID := id + ".generate"
+		fileID := id + ".write"
+		if d.python {
+			fileID = id + ".validate"
+		}
+		gen := &stage.Generate{Config: stage.ConfigureGeneration(p.Stages[genID]), Generator: r.Generator, Python: d.python, RecordUsage: r.RecordUsage}
+		var generated pipeline.Chain[stage.Artifacts, stage.Candidate, stage.Diagnostic]
+		if i == 0 {
+			generated = pipeline.Start[stage.Artifacts, stage.Candidate, stage.Diagnostic](genID, gen)
+		} else {
+			generated = pipeline.Then(chain, genID, gen)
+		}
+		chain = pipeline.Then(generated, fileID, &stage.WriteFile{Workspace: r.Workspace, Config: stage.ConfigureValidation(p.Stages[fileID]), Check: d.python, Cache: filepath.Join(r.CacheDir, id+".pyc")})
+	}
+	if p.Config.CommitMode == "stages" {
+		chain = pipeline.Then(chain, "commit", &stage.Commit{Committer: r.Committer, Message: "Save fixture artifacts"})
+	}
+	return chain, nil
+}
+
+func testPipeline(kind string, fields ...string) config.Pipeline {
+	p := config.Pipeline{Definition: "test-" + kind, Stages: map[string]map[string]string{}}
+	for i := 0; i < len(fields); i += 3 {
+		p.Stages[fields[i]+".generate"] = map[string]string{"filename": fields[i] + fields[i+2], "instruction": fields[i+1]}
+	}
+	return p
 }

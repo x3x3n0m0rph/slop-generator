@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"slop-generator/internal/form"
 	"slop-generator/internal/task"
 )
 
@@ -154,6 +155,20 @@ func (m ui) details(width, rows int) []string {
 		return wrapLines("Stopping tasks and saving history…", width)
 	}
 	if m.creating {
+		if m.stage == 3 {
+			field := m.fields[m.fieldIndex]
+			help := "Enter accepts · Esc cancels"
+			if field.Kind == form.Multiline {
+				help = "Enter newline · Ctrl+S accepts · Esc cancels"
+			}
+			header := wrapLines(fmt.Sprintf("Field %d/%d · %s\n%s · Shift+Tab back", m.fieldIndex+1, len(m.fields), field.Label, help), width)
+			input := wrapLines(m.value+"▌", width)
+			capacity := max(1, rows-len(header)-1)
+			if len(input) > capacity {
+				input = input[len(input)-capacity:]
+			}
+			return append(append(header, ""), input...)
+		}
 		labels := []string{"pipeline", "repository", "provider"}
 		lines := wrapLines("Choose "+labels[m.stage]+"\nEnter selects · Esc cancels", width)
 		lines = append(lines, "")
@@ -180,7 +195,7 @@ func (m ui) details(width, rows int) []string {
 		"Task: " + t.ID,
 		"Pipeline: " + t.PipelineName,
 		fmt.Sprintf("Repository: %s [%s]", t.RepoName, t.Repo.Branch),
-		fmt.Sprintf("Status: %s · Jobs: %d/%d", statusStyle(t.Status).render(t.Status), t.Completed, len(t.Pipeline.Jobs)),
+		fmt.Sprintf("Status: %s · Stages: %d/%d", statusStyle(t.Status).render(t.Status), t.Completed, t.StageTotal),
 		"Provider: " + t.ProviderName,
 		"Model: " + t.Provider.Model,
 		"Step: " + t.Step,

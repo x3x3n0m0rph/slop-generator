@@ -31,6 +31,13 @@ func main() {
 		reportFailure(os.Stderr, "проверка Git-репозиториев", "Конфигурация", *configPath, err)
 		os.Exit(1)
 	}
+	engine := &pipeline.Engine{Git: gitClient, Definitions: pipeline.Builtins(), NewProvider: func(c config.Provider) (pipeline.Provider, error) { return inference.NewHTTP(c) }}
+	for name, p := range c.Pipelines {
+		if _, err = engine.Fields(p); err != nil {
+			reportFailure(os.Stderr, "проверка pipeline "+name, "Конфигурация", *configPath, err)
+			os.Exit(1)
+		}
+	}
 	if *check {
 		fmt.Println("Configuration valid")
 		return
@@ -49,8 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 	e, err := task.New(c, *data, task.Dependencies{
-		Git: gitClient, Pipeline: pipeline.Builtin{}, History: store,
-		NewProvider: func(c config.Provider) (task.Provider, error) { return inference.NewHTTP(c) },
+		Pipeline: engine, History: store,
 	})
 	if err != nil {
 		reportFailure(os.Stderr, "загрузка истории и подготовка сервиса тасок", "История", filepath.Join(*data, "history.json"), err)

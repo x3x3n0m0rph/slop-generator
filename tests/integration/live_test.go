@@ -10,7 +10,7 @@ import (
 
 	"slop-generator/internal/config"
 	"slop-generator/internal/inference"
-	"slop-generator/internal/pipeline"
+	"slop-generator/internal/stage"
 )
 
 // Explicit opt-in: normal tests never use credentials or consume API tokens.
@@ -48,7 +48,7 @@ func TestLiveInference(t *testing.T) {
 	if err = os.WriteFile(source, []byte(strings.TrimSpace(result.Content)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, invalid, err := pipeline.CheckPython(ctx, "python", source, filepath.Join(dir, "result.pyc"))
+	_, invalid, err := stage.CheckPython(ctx, "python", source, filepath.Join(dir, "result.pyc"))
 	if err != nil || invalid {
 		t.Fatalf("live response failed Python validation: %v", err)
 	}

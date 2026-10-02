@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"slop-generator/internal/config"
 )
 
 func TestDefaultPullUpdatesSourceAndPreservesUnrelatedChanges(t *testing.T) {
@@ -20,7 +18,7 @@ func TestDefaultPullUpdatesSourceAndPreservesUnrelatedChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := mustGit(t, r.Path, "status", "--porcelain")
-	e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, r *http.Request) { answer(w, "generated text") })
+	e := setupEngine(t, r, testPipeline("text", "one", "write", ".txt"), func(w http.ResponseWriter, r *http.Request) { answer(w, "generated text") })
 	for i := 0; i < 2; i++ {
 		task := waitTask(t, e, enqueue(t, e))
 		if task.Status != "succeeded" || !task.Published || mustGit(t, r.Path, "rev-parse", "HEAD") != task.SHA {
@@ -43,7 +41,7 @@ func TestDefaultPullUpdatesSourceAndPreservesUnrelatedChanges(t *testing.T) {
 func TestPullFailureRetainsPublicationAndRetryOnlyPulls(t *testing.T) {
 	r, remote := gitFixture(t)
 	var calls atomic.Int32
-	e := setupEngine(t, r, config.Pipeline{Type: "text", Jobs: []config.Job{{ID: "one", Instruction: "write", Extension: ".txt"}}}, func(w http.ResponseWriter, req *http.Request) {
+	e := setupEngine(t, r, testPipeline("text", "one", "write", ".txt"), func(w http.ResponseWriter, req *http.Request) {
 		calls.Add(1)
 		commitFile(t, r.Path, "local-change.txt")
 		answer(w, "generated text")

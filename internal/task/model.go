@@ -1,4 +1,4 @@
-// Package task schedules tasks and orchestrates pipelines and repository publication.
+// Package task schedules and persists individual pipeline runs.
 package task
 
 import (
@@ -15,7 +15,8 @@ type Task struct {
 	Pipeline                             config.Pipeline
 	Repo                                 config.Repository
 	Provider                             config.Provider
-	Python                               string
+	StageTotal                           int
+	Commits                              []string
 	RepoKey                              string
 	Status, Step, Error, Work, SHA       string
 	Completed                            int

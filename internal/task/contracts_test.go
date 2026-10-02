@@ -34,22 +34,6 @@ func (*stubProvider) Generate(context.Context, inference.Request) (inference.Res
 }
 func (p *stubProvider) Close() { p.closed = true }
 
-type stubPipeline struct{ runs int }
-
-func (p *stubPipeline) Run(ctx context.Context, r pipeline.Runtime) error {
-	p.runs++
-	response, err := r.Generator.Generate(ctx, inference.Request{})
-	if err != nil {
-		return err
-	}
-	r.RecordUsage(response.Usage)
-	if err = os.WriteFile(filepath.Join(r.OutputDir, "custom.txt"), []byte(response.Content), 0600); err != nil {
-		return err
-	}
-	r.JobComplete("custom")
-	return nil
-}
-
 type stubRepository struct {
 	commits, pushes, pulls int
 	reject                 bool
@@ -62,9 +46,9 @@ func (*stubRepository) Identity(context.Context, config.Repository) (string, err
 func (*stubRepository) Prepare(_ context.Context, _ config.Repository, work string) (string, error) {
 	return "base", os.MkdirAll(work, 0700)
 }
-func (r *stubRepository) Commit(_ context.Context, work, output, message, hooks string) (string, error) {
+func (r *stubRepository) Commit(_ context.Context, work string, paths []string, message, hooks string) (string, error) {
 	r.commits++
-	if _, err := os.Stat(filepath.Join(output, "custom.txt")); err != nil {
+	if _, err := os.Stat(filepath.Join(work, paths[0])); err != nil {
 		return "", err
 	}
 	return "saved-sha", nil
@@ -81,32 +65,33 @@ func (r *stubRepository) Pull(context.Context, config.Repository) error { r.pull
 
 func TestInjectedPipelineAndAdapters(t *testing.T) {
 	provider := &stubProvider{}
-	runner := &stubPipeline{}
+	runs := 0
 	repo := &stubRepository{reject: true}
 	store := &memoryStore{}
-	c := config.Config{Parallelism: 1, Providers: map[string]config.Provider{"p": {APIKey: "private-key", SOCKS5: "private-proxy"}}, Repositories: map[string]config.Repository{"r": {OutputDir: "generated"}}, Pipelines: map[string]config.Pipeline{"x": {Type: "custom", Jobs: []config.Job{{ID: "original"}}}}}
-	service, err := New(c, t.TempDir(), Dependencies{NewProvider: func(config.Provider) (Provider, error) { return provider, nil }, Pipeline: runner, Git: repo, History: store})
+	c := config.Config{Parallelism: 1, Providers: map[string]config.Provider{"p": {APIKey: "private-key", SOCKS5: "private-proxy"}}, Repositories: map[string]config.Repository{"r": {OutputDir: "generated"}}, Pipelines: map[string]config.Pipeline{"x": testPipeline("text", "custom", "original", ".txt")}}
+	engine := &pipeline.Engine{Git: repo, Definitions: map[string]pipeline.Definition{"test-text": testDefinition{ids: []string{"custom"}}}, NewProvider: func(config.Provider) (pipeline.Provider, error) { runs++; return provider, nil }}
+	service, err := New(c, t.TempDir(), Dependencies{Pipeline: engine, History: store})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer service.Close()
 	// The service owns its configuration: callers cannot mutate a queued run.
-	c.Pipelines["x"] = config.Pipeline{Jobs: []config.Job{{ID: "changed"}}}
+	c.Pipelines["x"] = testPipeline("text", "custom", "changed", ".txt")
 	if err = service.Enqueue("x", "r", "p"); err != nil {
 		t.Fatal(err)
 	}
 	tasks, _ := service.Snapshot()
 	id := tasks[0].ID
 	failed := waitTask(t, service, id)
-	if failed.Status != "failed" || failed.SHA != "saved-sha" || !provider.closed || runner.runs != 1 || failed.Usage.Total != 7 {
+	if failed.Status != "failed" || failed.SHA != "saved-sha" || !provider.closed || runs != 1 || failed.Usage.Total != 7 {
 		t.Fatalf("unexpected execution: %+v", failed)
 	}
 	if failed.Provider.APIKey != "" || failed.Provider.SOCKS5 != "" {
 		t.Fatal("snapshot exposed credentials")
 	}
-	failed.Pipeline.Jobs[0].ID = "snapshot mutation"
+	failed.Pipeline.Stages["custom.generate"]["instruction"] = "snapshot mutation"
 	fresh, _ := service.Snapshot()
-	if fresh[0].Pipeline.Jobs[0].ID != "original" {
+	if fresh[0].Pipeline.Stages["custom.generate"]["instruction"] != "original" {
 		t.Fatal("snapshot changed internal task state")
 	}
 	if store.tasks[0].Provider.APIKey != "" || store.tasks[0].Provider.SOCKS5 != "" {
@@ -117,15 +102,18 @@ func TestInjectedPipelineAndAdapters(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := waitTask(t, service, id)
-	if done.Status != "succeeded" || runner.runs != 1 || repo.commits != 1 || repo.pushes != 2 || repo.pulls != 1 {
+	if done.Status != "succeeded" || runs != 1 || repo.commits != 1 || repo.pushes != 2 || repo.pulls != 1 {
 		t.Fatalf("retry regenerated the task: %+v", done)
 	}
 }
 
 func TestHistoryInitializationFailure(t *testing.T) {
 	sentinel := errors.New("storage unavailable")
-	_, err := New(config.Config{}, t.TempDir(), Dependencies{NewProvider: func(config.Provider) (Provider, error) { return &stubProvider{}, nil }, Pipeline: &stubPipeline{}, Git: &stubRepository{}, History: &memoryStore{err: sentinel}})
+	_, err := New(config.Config{}, t.TempDir(), Dependencies{Pipeline: &pipeline.Engine{}, History: &memoryStore{err: sentinel}})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("storage failure was hidden: %v", err)
 	}
 }
+
+func (*stubRepository) Head(context.Context, string) (string, error) { return "saved-sha", nil }
+func (*stubRepository) Clean(context.Context, string) (bool, error)  { return true, nil }
