@@ -119,13 +119,32 @@ func (s *FileReadStage) Run(ctx context.Context, _ *RunContext, _ Input[Artifact
 type InferenceStage struct {
 	Generator   Generator
 	RecordUsage func(*inference.Usage)
+	Language    string
 	messages    []inference.Message
+}
+
+var documentationLanguages = []string{"English", "Russian", "Spanish", "French", "German", "Italian", "Portuguese", "Chinese", "Japanese", "Korean", "Arabic"}
+
+func DocumentationFields(id string, values map[string]string) ([]form.Field, error) {
+	for key := range values {
+		if key != "language" {
+			return nil, fmt.Errorf("stage %s: unknown setting %s", id, key)
+		}
+	}
+	field := form.Field{ID: id + ".language", Label: "Documentation language", Value: values["language"], Kind: form.Choice, Options: documentationLanguages, Required: true}
+	if value := values["language"]; value != "" {
+		if err := field.Validate(value); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	return []form.Field{field}, nil
 }
 
 func (s *InferenceStage) Run(ctx context.Context, _ *RunContext, in Input[FileSource, Diagnostic]) (Output[Documentation, Unit], error) {
 	if in.Feedback == nil {
 		s.messages = []inference.Message{
-			{Role: "system", Content: "Generate clear, accurate technical documentation for the provided source file. Return only Markdown. Use a concise title, describe the class and its public behavior, document important methods and parameters when present, and use fenced code blocks with a language when useful. Keep lines reasonably short."},
+			{Role: "system", Content: "Generate clear, accurate technical documentation for the provided source file in " + s.Language + ". Return only Markdown. Use a concise title, describe the class and its public behavior, document important methods and parameters when present, and use fenced code blocks with a language when useful. Keep lines reasonably short."},
 			{Role: "user", Content: "Source file: " + in.Result.Filename + "\n\n```\n" + in.Result.Content + "\n```"},
 		}
 	} else {

@@ -85,13 +85,16 @@ func (c Chain[I, O, F]) Run(ctx context.Context, input I, maxRetries int, event 
 			return zero, err
 		}
 		if event != nil {
-			event("Running " + c.steps[i].id)
+			event("[stage: " + c.steps[i].id + "] Running")
 		}
 		status, err := c.steps[i].run(ctx, shared)
 		if err != nil {
 			return zero, fmt.Errorf("stage %s: %w", c.steps[i].id, err)
 		}
 		if status == stage.Success {
+			if event != nil {
+				event("[stage: " + c.steps[i].id + "] Completed")
+			}
 			i++
 			if complete != nil {
 				complete(i)
@@ -109,7 +112,7 @@ func (c Chain[I, O, F]) Run(ctx context.Context, input I, maxRetries int, event 
 		}
 		retries[i]++
 		if event != nil {
-			event(fmt.Sprintf("Retrying %s after %s (%d/%d)", c.steps[i-1].id, c.steps[i].id, retries[i], maxRetries))
+			event(fmt.Sprintf("[stage: %s] Retrying %s after failure (%d/%d)", c.steps[i].id, c.steps[i-1].id, retries[i], maxRetries))
 		}
 		// Preserve the predecessor input and its freshly delivered feedback.
 		for j := i; j < len(c.steps); j++ {

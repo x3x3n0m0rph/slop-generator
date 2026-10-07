@@ -17,7 +17,7 @@ type session struct {
 
 func (s *session) event(message string) {
 	if s.runtime.Event != nil {
-		s.runtime.Event(message)
+		s.runtime.Event("[pipeline] " + message)
 	}
 }
 func (s *session) save() {

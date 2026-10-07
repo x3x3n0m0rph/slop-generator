@@ -3,6 +3,7 @@ package tui
 import (
 	"slop-generator/internal/form"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -27,9 +28,10 @@ func (c *stubController) EnqueueConfigured(p, r, v string, answers form.Answers)
 	c.answers = answers
 	return c.enqueueError
 }
-func (*stubController) Cancel(string)             {}
-func (*stubController) RetryPublish(string) error { return nil }
-func (c *stubController) Close()                  { c.closed = true }
+func (*stubController) Cancel(string)                          {}
+func (*stubController) RetryPublish(string) error              { return nil }
+func (*stubController) DeleteOlderThan(time.Time) (int, error) { return 0, nil }
+func (c *stubController) Close()                               { c.closed = true }
 
 func press(t *testing.T, m ui, code rune) (ui, tea.Cmd) {
 	t.Helper()

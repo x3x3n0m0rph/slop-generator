@@ -48,6 +48,33 @@ func heading(text string, width int) string {
 	return titleStyle.render(text) + borderStyle.render(strings.Repeat("─", max(0, width-ansi.StringWidth(text))))
 }
 
+func eventLabel(event string) string {
+	if strings.HasPrefix(event, "[stage:") || strings.HasPrefix(event, "[pipeline]") {
+		return event
+	}
+	fields := strings.Fields(event)
+	if len(fields) >= 2 && (fields[0] == "Running" || fields[0] == "Completed") {
+		return "[stage: " + fields[1] + "] " + strings.TrimPrefix(event, fields[0]+" ")
+	}
+	if len(fields) >= 4 && fields[0] == "Retrying" {
+		return "[stage: " + fields[3] + "] " + event
+	}
+	return "[pipeline] " + event
+}
+
+func currentStage(step string) string {
+	const prefix = "[stage: "
+	if strings.HasPrefix(step, prefix) {
+		if end := strings.Index(step, "] "); end > len(prefix) && strings.HasSuffix(step, "] Running") {
+			return step[len(prefix):end]
+		}
+	}
+	if strings.HasPrefix(step, "Running ") {
+		return strings.TrimPrefix(step, "Running ")
+	}
+	return "—"
+}
+
 func (m ui) View() tea.View {
 	width, height := m.screenSize()
 	if width < 8 || height < 6 {
@@ -72,7 +99,9 @@ func (m ui) View() tea.View {
 		listTitle = fmt.Sprintf("Tasks %d/%d", m.selected+1, len(m.tasks))
 	}
 	detailTitle := "Details / execution"
-	if m.creating {
+	if m.cleaning {
+		detailTitle = "Clean old tasks"
+	} else if m.creating {
 		detailTitle = "New task"
 	}
 	lines = append(lines, borderStyle.render("┌")+heading(listTitle, left)+borderStyle.render("┬")+heading(detailTitle, right)+borderStyle.render("┐"))
@@ -87,7 +116,7 @@ func (m ui) View() tea.View {
 		lines = append(lines, borderStyle.render("│")+fitLine(l, left)+borderStyle.render("│")+fitLine(r, right)+borderStyle.render("│"))
 	}
 	lines = append(lines, borderStyle.render("└"+strings.Repeat("─", left)+"┴"+strings.Repeat("─", right)+"┘"))
-	lines = append(lines, mutedStyle.render(fitLine("n new  ↑/↓ tasks  c cancel  r rerun  p retry  PgUp/PgDn logs  q quit", width)))
+	lines = append(lines, mutedStyle.render(fitLine("n new  x clean old tasks  ↑/↓ tasks  c cancel  r rerun  p retry  PgUp/PgDn logs  q quit", width)))
 	notice := m.notice
 	if m.closing {
 		notice = "Stopping tasks and saving history…"
@@ -154,6 +183,31 @@ func (m ui) details(width, rows int) []string {
 	if m.closing {
 		return wrapLines("Stopping tasks and saving history…", width)
 	}
+	if m.cleaning {
+		ageNames := []string{"1 day", "7 days", "30 days", "90 days"}
+		lines := wrapLines("Choose the age limit. Enter confirms deletion of completed tasks created before that limit. Running and queued tasks are kept.", width)
+		lines = append(lines, "")
+		for i, age := range cleanupAges {
+			count := 0
+			cutoff := time.Now().Add(-age)
+			for _, t := range m.tasks {
+				if t.Created.Before(cutoff) && t.Status != "queued" && t.Status != "running" {
+					count++
+				}
+			}
+			mark := "  "
+			if i == m.cleanupChoice {
+				mark = "> "
+			}
+			line := fmt.Sprintf("%s%s · %d task(s)", mark, ageNames[i], count)
+			if i == m.cleanupChoice {
+				line = selectedStyle.render(line)
+			}
+			lines = append(lines, line)
+		}
+		lines = append(lines, "", "Enter delete · Esc cancel")
+		return lines
+	}
 	if m.creating {
 		if m.stage == 3 {
 			field := m.fields[m.fieldIndex]
@@ -191,6 +245,10 @@ func (m ui) details(width, rows int) []string {
 		return wrapLines("Select a task to see its details.\n\nPress n to create a task.", width)
 	}
 	t := m.tasks[m.selected]
+	stage := "—"
+	if t.Status == "running" {
+		stage = currentStage(t.Step)
+	}
 	metadata := []string{
 		"Task: " + t.ID,
 		"Pipeline: " + t.PipelineName,
@@ -198,7 +256,8 @@ func (m ui) details(width, rows int) []string {
 		fmt.Sprintf("Status: %s · Stages: %d/%d", statusStyle(t.Status).render(t.Status), t.Completed, t.StageTotal),
 		"Provider: " + t.ProviderName,
 		"Model: " + t.Provider.Model,
-		"Step: " + t.Step,
+		"Current stage: " + stage,
+		"Latest activity: " + t.Step,
 		fmt.Sprintf("Started: %s · Elapsed: %s", t.Created.Format(time.DateTime), taskElapsed(t).Round(time.Second)),
 	}
 	if t.UsageKnown {
@@ -228,7 +287,7 @@ func (m ui) details(width, rows int) []string {
 	capacity := max(0, rows-len(lines))
 	events := []string{}
 	for _, event := range t.Events {
-		events = append(events, wrapLines(event, width)...)
+		events = append(events, wrapLines(eventLabel(event), width)...)
 	}
 	offset := min(m.scroll, max(0, len(events)-capacity))
 	last := len(events) - offset

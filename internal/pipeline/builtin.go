@@ -179,8 +179,13 @@ func (DocumentationGeneration) Fields(p config.Pipeline) ([]form.Field, error) {
 	if err != nil {
 		return nil, err
 	}
+	languageFields, err := stage.DocumentationFields("inference", p.Stages["inference"])
+	if err != nil {
+		return nil, err
+	}
+	fields = append(fields, languageFields...)
 	for id, values := range p.Stages {
-		if id != "file-read" && id != "markdown-lint" {
+		if id != "file-read" && id != "inference" && id != "markdown-lint" {
 			return nil, fmt.Errorf("unknown stage %s", id)
 		}
 		if id == "markdown-lint" && len(values) != 0 {
@@ -197,7 +202,7 @@ func (p DocumentationGeneration) Build(c config.Pipeline, r Resources) (Chain[st
 	// Each task gets its own stage instances; their concrete types make the
 	// source -> documentation -> linted documentation -> written artifact flow explicit.
 	readFile := &stage.FileReadStage{Worktree: r.Worktree, Config: stage.ConfigureFileRead(c.Stages["file-read"])}
-	generateDocumentation := &stage.InferenceStage{Generator: r.Generator, RecordUsage: r.RecordUsage}
+	generateDocumentation := &stage.InferenceStage{Generator: r.Generator, RecordUsage: r.RecordUsage, Language: c.Stages["inference"]["language"]}
 	markdownLint := &stage.MarkdownLintStage{}
 	writeDocumentation := &stage.FileWriteStage{Workspace: r.Workspace}
 

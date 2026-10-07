@@ -86,6 +86,33 @@ func (e *Service) Snapshot() ([]Task, error) {
 	return out, e.storageError
 }
 
+// DeleteOlderThan removes completed tasks created before cutoff and persists the new history.
+func (e *Service) DeleteOlderThan(cutoff time.Time) (int, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	kept := make([]*Task, 0, len(e.tasks))
+	removed := 0
+	for _, t := range e.tasks {
+		if t.Created.Before(cutoff) && t.Status != "queued" && t.Status != "running" {
+			removed++
+			continue
+		}
+		kept = append(kept, t)
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	previous := e.tasks
+	e.tasks = kept
+	e.saveLocked()
+	if e.storageError != nil {
+		err := e.storageError
+		e.tasks = previous
+		return 0, err
+	}
+	return removed, nil
+}
+
 // Enqueue selects profiles and schedules a new task subject to concurrency limits.
 func (e *Service) Enqueue(p, r, v string) error {
 	return e.EnqueueConfigured(p, r, v, nil)

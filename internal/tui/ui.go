@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -15,7 +16,14 @@ import (
 type tickMsg struct{}
 type actionMsg struct{ err error }
 type enqueueMsg struct{ err error }
+type cleanupMsg struct {
+	removed int
+	err     error
+}
 type closedMsg struct{}
+
+var cleanupAges = []time.Duration{24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour, 90 * 24 * time.Hour}
+
 type ui struct {
 	engine                       Controller
 	tasks                        []task.Task
@@ -27,6 +35,8 @@ type ui struct {
 	picked                       [3]string
 	notice                       string
 	closing                      bool
+	cleaning                     bool
+	cleanupChoice                int
 	fields                       []form.Field
 	answers                      form.Answers
 	fieldIndex                   int
@@ -80,6 +90,14 @@ func (m ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.notice = "Task queued"
+		}
+		m.refresh()
+	case cleanupMsg:
+		m.cleaning = false
+		if msg.err != nil {
+			m.notice = msg.err.Error()
+		} else {
+			m.notice = fmt.Sprintf("Removed %d old task(s)", msg.removed)
 		}
 		m.refresh()
 	case tea.WindowSizeMsg:
@@ -216,11 +234,29 @@ func (m ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.cleaning {
+			switch key {
+			case "esc":
+				m.cleaning = false
+			case "up", "k":
+				m.cleanupChoice = max(0, m.cleanupChoice-1)
+			case "down", "j":
+				m.cleanupChoice = min(len(cleanupAges)-1, m.cleanupChoice+1)
+			case "enter":
+				cutoff := time.Now().Add(-cleanupAges[m.cleanupChoice])
+				return m, func() tea.Msg { n, err := m.engine.DeleteOlderThan(cutoff); return cleanupMsg{removed: n, err: err} }
+			}
+			return m, nil
+		}
 		switch key {
 		case "n":
 			m.creating = true
 			m.stage = 0
 			m.pickChoices()
+			m.notice = ""
+		case "x":
+			m.cleaning = true
+			m.cleanupChoice = 0
 			m.notice = ""
 		case "up", "k":
 			m.selected = max(0, m.selected-1)
@@ -267,6 +303,7 @@ type Controller interface {
 	Rerun(string) error
 	Cancel(id string)
 	RetryPublish(id string) error
+	DeleteOlderThan(cutoff time.Time) (int, error)
 	Close()
 }
 
