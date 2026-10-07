@@ -9,6 +9,18 @@ providers:
     socks5: socks5://user:password@127.0.0.1:1080
     max_tokens: 4096
     timeout_seconds: 120
+  # Example browser-based public OAuth2 client (replace endpoint and IDs).
+  # oauth-provider:
+  #   base_url: https://inference.example.invalid/v1
+  #   model: example-model
+  #   auth_mode: oauth2
+  #   oauth2:
+  #     well_known_url: https://identity.example.invalid/.well-known/openid-configuration
+  #     client_id: example-client
+  #     redirect_uri: http://127.0.0.1:8001/callback
+  #     scope: openid profile
+  #     # Avoid disabling TLS checks unless the identity server requires it.
+  #     tls_insecure_skip_verify: false
 
 repositories:
   playground:
@@ -58,7 +70,7 @@ pipelines:
     definition: documentation
     config:
       max_retries: 3
-      commit_mode: pipeline
+      commit_mode: stages
     stages:
       file-read:
         extension: .go

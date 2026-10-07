@@ -342,6 +342,8 @@ func (e *Service) Rerun(id string) error {
 	old.Provider.KeyFile = provider.KeyFile
 	old.Provider.SOCKS5 = provider.SOCKS5
 	old.Provider.SOCKS5File = provider.SOCKS5File
+	old.Provider.AuthMode = provider.AuthMode
+	old.Provider.OAuth2 = provider.OAuth2
 	old.Status = "queued"
 	old.Step = ""
 	old.Error = ""

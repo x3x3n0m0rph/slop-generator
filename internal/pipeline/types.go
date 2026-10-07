@@ -23,6 +23,11 @@ type Repository interface {
 	Publish(context.Context, string, string, string) error
 	Pull(context.Context, config.Repository) error
 }
+
+// CommitContextReader supplies bounded diff and source repository reflog context.
+type CommitContextReader interface {
+	CommitContext(context.Context, string, string, []string) (string, []string, error)
+}
 type State struct {
 	Work, SHA string
 	Published bool
@@ -45,12 +50,13 @@ type Definition interface {
 	Build(config.Pipeline, Resources) (Chain[stage.Artifacts, stage.Artifacts, stage.Unit], error)
 }
 type Resources struct {
-	Generator   Generator
-	Worktree    stage.Worktree
-	Workspace   stage.Workspace
-	Committer   stage.Committer
-	CacheDir    string
-	RecordUsage func(*inference.Usage)
+	Generator     Generator
+	Worktree      stage.Worktree
+	Workspace     stage.Workspace
+	Committer     stage.Committer
+	CommitContext stage.CommitContextProvider
+	CacheDir      string
+	RecordUsage   func(*inference.Usage)
 }
 type Engine struct {
 	Git         Repository

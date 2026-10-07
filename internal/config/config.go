@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -14,6 +15,7 @@ import (
 type Provider struct {
 	BaseURL    string `yaml:"base_url"`
 	Model      string `yaml:"model"`
+	AuthMode   string `yaml:"auth_mode"`
 	APIKey     string `yaml:"api_key"`
 	KeyEnv     string `yaml:"key_env"`
 	KeyFile    string `yaml:"key_file"`
@@ -21,6 +23,15 @@ type Provider struct {
 	SOCKS5File string `yaml:"socks5_file"`
 	MaxTokens  int    `yaml:"max_tokens"`
 	Timeout    int    `yaml:"timeout_seconds"`
+	OAuth2     OAuth2 `yaml:"oauth2"`
+}
+
+type OAuth2 struct {
+	WellKnownURL          string `yaml:"well_known_url"`
+	ClientID              string `yaml:"client_id"`
+	RedirectURI           string `yaml:"redirect_uri"`
+	Scope                 string `yaml:"scope"`
+	TLSInsecureSkipVerify bool   `yaml:"tls_insecure_skip_verify"`
 }
 type Repository struct {
 	Path          string `yaml:"path"`
@@ -108,14 +119,35 @@ func Load(path string) (Config, error) {
 		if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
 			return c, At("providers."+name+".base_url", fmt.Errorf("provider %s: invalid base_url", name), "Укажите полный HTTP или HTTPS URL API.")
 		}
+		if p.AuthMode == "" {
+			p.AuthMode = "token"
+		}
 		keySources := 0
 		for _, source := range []string{p.APIKey, p.KeyEnv, p.KeyFile} {
 			if strings.TrimSpace(source) != "" {
 				keySources++
 			}
 		}
-		if p.Model == "" || keySources != 1 {
-			return c, At("providers."+name, fmt.Errorf("provider %s: model and exactly one key source required", name), "Укажите model и один источник ключа: api_key, key_env или key_file.")
+		if p.Model == "" {
+			return c, At("providers."+name+".model", fmt.Errorf("provider %s: model is required", name), "Укажите model провайдера.")
+		}
+		switch p.AuthMode {
+		case "token":
+			if keySources != 1 || p.OAuth2 != (OAuth2{}) {
+				return c, At("providers."+name, fmt.Errorf("provider %s: token auth requires exactly one key source and no OAuth2 settings", name), "Для auth_mode: token укажите один источник ключа: api_key, key_env или key_file.")
+			}
+		case "oauth2":
+			if keySources != 0 {
+				return c, At("providers."+name, fmt.Errorf("provider %s: OAuth2 cannot be combined with an API key source", name), "Для auth_mode: oauth2 удалите api_key, key_env и key_file.")
+			}
+			if err := validateOAuth2(p.OAuth2); err != nil {
+				return c, At("providers."+name+".oauth2", fmt.Errorf("provider %s: %w", name, err), "Проверьте well_known_url, client_id и loopback redirect_uri для OAuth2.")
+			}
+			if p.OAuth2.Scope == "" {
+				p.OAuth2.Scope = "openid profile"
+			}
+		default:
+			return c, At("providers."+name+".auth_mode", fmt.Errorf("provider %s: unsupported auth_mode %q", name, p.AuthMode), "Выберите auth_mode: token или oauth2.")
 		}
 		if p.SOCKS5 != "" && p.SOCKS5File != "" {
 			return c, At("providers."+name+".socks5", fmt.Errorf("provider %s: choose one proxy source", name), "Оставьте только socks5 или socks5_file.")
@@ -168,4 +200,31 @@ func Load(path string) (Config, error) {
 		c.Pipelines[name] = p
 	}
 	return c, nil
+}
+
+func validateOAuth2(c OAuth2) error {
+	wellKnown, err := url.Parse(c.WellKnownURL)
+	if err != nil || wellKnown.Host == "" || (wellKnown.Scheme != "https" && wellKnown.Scheme != "http") || wellKnown.User != nil || wellKnown.Fragment != "" {
+		return fmt.Errorf("invalid well_known_url")
+	}
+	if strings.TrimSpace(c.ClientID) == "" {
+		return fmt.Errorf("client_id is required")
+	}
+	redirect, err := url.Parse(c.RedirectURI)
+	if err != nil || redirect.Scheme != "http" || redirect.User != nil || redirect.Fragment != "" || redirect.RawQuery != "" || redirect.Path == "" {
+		return fmt.Errorf("redirect_uri must be an http loopback URL with a path and explicit port")
+	}
+	host := strings.ToLower(redirect.Hostname())
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return fmt.Errorf("redirect_uri host must be localhost or a loopback address")
+	}
+	port := redirect.Port()
+	if port == "" {
+		return fmt.Errorf("redirect_uri must include an explicit port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("redirect_uri has an invalid port")
+	}
+	return nil
 }

@@ -49,6 +49,13 @@ func (s *session) Commit(ctx context.Context, paths []string, message string) (s
 	}
 	return sha, err
 }
+func (s *session) CommitContext(ctx context.Context, paths []string) (string, []string, error) {
+	reader, ok := s.engine.Git.(CommitContextReader)
+	if !ok {
+		return "", nil, fmt.Errorf("repository does not provide commit context")
+	}
+	return reader.CommitContext(ctx, s.runtime.Repo.Path, s.state.Work, paths)
+}
 func (e *Engine) Identity(ctx context.Context, r Runtime) (string, error) {
 	return e.Git.Identity(ctx, r.Repo)
 }
@@ -98,9 +105,14 @@ func (e *Engine) Run(ctx context.Context, r Runtime) error {
 	if err != nil {
 		return err
 	}
-	s.output, err = outputPath(expected, r.Repo.OutputDir, r.ID)
-	if err != nil {
-		return err
+	if r.Config.Definition == "documentation" {
+		// Documentation paths mirror source paths from the repository root.
+		s.output = expected
+	} else {
+		s.output, err = outputPath(expected, r.Repo.OutputDir, r.ID)
+		if err != nil {
+			return err
+		}
 	}
 	if err = os.MkdirAll(s.output, 0700); err != nil {
 		return err
@@ -115,7 +127,7 @@ func (e *Engine) Run(ctx context.Context, r Runtime) error {
 	if r.Config.Config.CommitMode == "stages" {
 		committer = s
 	}
-	chain, err := e.Definitions[r.Config.Definition].Build(r.Config, Resources{Generator: p, Worktree: stage.Directory(expected), Workspace: stage.Directory(s.output), Committer: committer, CacheDir: filepath.Join(r.DataDir, "pycache", r.ID), RecordUsage: r.RecordUsage})
+	chain, err := e.Definitions[r.Config.Definition].Build(r.Config, Resources{Generator: p, Worktree: stage.Directory(expected), Workspace: stage.Directory(s.output), Committer: committer, CommitContext: s, CacheDir: filepath.Join(r.DataDir, "pycache", r.ID), RecordUsage: r.RecordUsage})
 	if err != nil {
 		return err
 	}

@@ -172,8 +172,8 @@ func (p ShortTexts) Build(c config.Pipeline, r Resources) (Chain[stage.Artifacts
 }
 
 func (DocumentationGeneration) Fields(p config.Pipeline) ([]form.Field, error) {
-	if p.Config.CommitMode != "" && p.Config.CommitMode != "pipeline" {
-		return nil, fmt.Errorf("documentation pipeline requires commit_mode pipeline")
+	if p.Config.CommitMode != "stages" {
+		return nil, fmt.Errorf("documentation pipeline requires commit_mode stages")
 	}
 	fields, err := stage.FileReadFields("file-read", p.Stages["file-read"])
 	if err != nil {
@@ -200,7 +200,7 @@ func (p DocumentationGeneration) Build(c config.Pipeline, r Resources) (Chain[st
 		return Chain[stage.Artifacts, stage.Artifacts, stage.Unit]{}, err
 	}
 	// Each task gets its own stage instances; their concrete types make the
-	// source -> documentation -> linted documentation -> written artifact flow explicit.
+	// source -> documentation -> lint -> write -> generated-message commit.
 	readFile := &stage.FileReadStage{Worktree: r.Worktree, Config: stage.ConfigureFileRead(c.Stages["file-read"])}
 	generateDocumentation := &stage.InferenceStage{Generator: r.Generator, RecordUsage: r.RecordUsage, Language: c.Stages["inference"]["language"]}
 	markdownLint := &stage.MarkdownLintStage{}
@@ -210,12 +210,13 @@ func (p DocumentationGeneration) Build(c config.Pipeline, r Resources) (Chain[st
 	documentationGenerated := Then(fileRead, "inference", generateDocumentation)
 	documentationLinted := Then(documentationGenerated, "markdown-lint", markdownLint)
 	documentationWritten := Then(documentationLinted, "file-write", writeDocumentation)
-	return documentationWritten, nil
+	commitDocumentation := &stage.DocumentationCommitStage{Generator: r.Generator, Committer: r.Committer, Context: r.CommitContext, RecordUsage: r.RecordUsage}
+	return Then(documentationWritten, "commit", commitDocumentation), nil
 }
 
-func (PythonFunctions) StageCount(c config.Pipeline) int       { return stageCount(c, 6) }
-func (ShortTexts) StageCount(c config.Pipeline) int            { return stageCount(c, 4) }
-func (DocumentationGeneration) StageCount(config.Pipeline) int { return 4 }
+func (PythonFunctions) StageCount(c config.Pipeline) int         { return stageCount(c, 6) }
+func (ShortTexts) StageCount(c config.Pipeline) int              { return stageCount(c, 4) }
+func (DocumentationGeneration) StageCount(c config.Pipeline) int { return stageCount(c, 4) }
 func stageCount(c config.Pipeline, count int) int {
 	if c.Config.CommitMode == "stages" {
 		return count + 1

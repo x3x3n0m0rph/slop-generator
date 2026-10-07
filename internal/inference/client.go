@@ -3,6 +3,7 @@ package inference
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 type Client struct {
 	cfg    config.Provider
 	key    string
+	oauth  *OAuthManager
 	client *http.Client
 }
 
@@ -34,6 +36,9 @@ func secretFile(path string) (string, error) {
 
 // NewHTTP resolves credentials and configures the provider's optional SOCKS5 proxy.
 func NewHTTP(c config.Provider) (*Client, error) {
+	if c.AuthMode == "oauth2" {
+		return nil, fmt.Errorf("OAuth2 provider must be initialized at application startup")
+	}
 	key := strings.TrimSpace(c.APIKey)
 	if c.KeyEnv != "" {
 		key = os.Getenv(c.KeyEnv)
@@ -48,8 +53,20 @@ func NewHTTP(c config.Provider) (*Client, error) {
 	if key == "" {
 		return nil, fmt.Errorf("API key is empty")
 	}
+	client, e := newHTTPClient(c, false)
+	if e != nil {
+		return nil, e
+	}
+	return &Client{cfg: c, key: key, client: client}, nil
+}
+
+func newHTTPClient(c config.Provider, insecureTLS bool) (*http.Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if insecureTLS {
+		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}
+	}
 	px := c.SOCKS5
+	var e error
 	if c.SOCKS5File != "" {
 		px, e = secretFile(c.SOCKS5File)
 		if e != nil {
@@ -77,7 +94,7 @@ func NewHTTP(c config.Provider) (*Client, error) {
 		tr.Proxy = nil
 		tr.DialContext = cd.DialContext
 	}
-	return &Client{c, key, &http.Client{Transport: tr, Timeout: time.Duration(c.Timeout) * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &http.Client{Transport: tr, Timeout: time.Duration(c.Timeout) * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 }
 func (p *Client) Generate(ctx context.Context, r Request) (Result, error) {
 	var out Result
@@ -94,7 +111,14 @@ func (p *Client) Generate(ctx context.Context, r Request) (Result, error) {
 	if e != nil {
 		return out, e
 	}
-	req.Header.Set("Authorization", "Bearer "+p.key)
+	key := p.key
+	if p.oauth != nil {
+		key, e = p.oauth.accessToken(ctx)
+		if e != nil {
+			return out, e
+		}
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, e := p.client.Do(req)
 	if e != nil {

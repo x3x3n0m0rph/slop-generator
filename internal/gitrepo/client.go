@@ -141,6 +141,51 @@ func (Client) Commit(ctx context.Context, work string, paths []string, message, 
 	return run(ctx, work, "rev-parse", "HEAD")
 }
 
+// CommitContext stages the generated paths, returns their first 20 diff lines,
+// and reads up to 20 most recent commit subjects from the source repository reflog.
+func (Client) CommitContext(ctx context.Context, source, work string, paths []string) (string, []string, error) {
+	if source == "" || len(paths) == 0 {
+		return "", nil, fmt.Errorf("source repository and commit paths are required")
+	}
+	for _, path := range paths {
+		if !config.SafeRelative(path) {
+			return "", nil, fmt.Errorf("unsafe commit path")
+		}
+	}
+	args := append([]string{"add", "--"}, paths...)
+	if _, err := run(ctx, work, args...); err != nil {
+		return "", nil, err
+	}
+	diffArgs := append([]string{"diff", "--cached", "--no-ext-diff", "--"}, paths...)
+	diff, err := run(ctx, work, diffArgs...)
+	if err != nil {
+		return "", nil, err
+	}
+	lines := strings.Split(diff, "\n")
+	if len(lines) > 20 {
+		lines = lines[:20]
+	}
+	reflog, err := run(ctx, source, "reflog", "--format=%gs")
+	if err != nil {
+		return "", nil, err
+	}
+	var messages []string
+	for _, line := range strings.Split(reflog, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "commit") {
+			continue
+		}
+		_, message, ok := strings.Cut(line, ": ")
+		if ok && strings.TrimSpace(message) != "" {
+			messages = append(messages, strings.TrimSpace(message))
+			if len(messages) == 20 {
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n"), messages, nil
+}
+
 func (Client) Head(ctx context.Context, work string) (string, error) {
 	return run(ctx, work, "rev-parse", "HEAD")
 }

@@ -20,7 +20,9 @@ go run ./cmd/slop-generator -config config.yaml -check-config
 go run ./cmd/slop-generator -config config.yaml
 ```
 
-Set `api_key` and optional `socks5: socks5://user:password@host:port` directly in the configuration. `config.yaml` is ignored by Git because it may contain credentials. Keep it outside target repositories, and never put secrets in prompts. SOCKS5 applies to inference only. For existing installations, `key_env` and `key_file` remain optional alternatives to `api_key` (choose exactly one key source); `socks5_file` remains an alternative to `socks5`.
+Set `api_key` and optional `socks5: socks5://user:password@host:port` directly in the configuration. `config.yaml` is ignored by Git because it may contain credentials. Keep it outside target repositories, and never put secrets in prompts. SOCKS5 is used for provider HTTP requests, including OAuth discovery and token requests. For existing installations, `key_env` and `key_file` remain optional alternatives to `api_key` (choose exactly one key source); `socks5_file` remains an alternative to `socks5`.
+
+Providers can also use `auth_mode: oauth2` instead of a token source. Configure `oauth2.well_known_url`, `client_id`, `redirect_uri` (a loopback HTTP URL with an explicit port), and optional `scope`. The application discovers the authorization and token endpoints, uses Authorization Code with PKCE S256, opens a browser when no usable refresh token is cached, and refreshes access tokens in the background. OAuth tokens are stored in the application data directory, separately from task history. `tls_insecure_skip_verify` is available for OAuth endpoints with private certificates; it disables certificate verification and should otherwise remain false.
 
 Proxy files also support three lines: `host:port`, `user: USERNAME`, `pass: PASSWORD`, matching the supplied `socks5.txt` format.
 
