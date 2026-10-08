@@ -1,0 +1,47 @@
+name: Build binaries
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-amd64
+            extension: ""
+          - os: windows-latest
+            target: windows-amd64
+            extension: .exe
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          go build -trimpath -o "dist/slop-generator-${{ matrix.target }}${{ matrix.extension }}" ./cmd/slop-generator
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: slop-generator-${{ matrix.target }}
+          path: dist/slop-generator-${{ matrix.target }}${{ matrix.extension }}
+          if-no-files-found: error
+          retention-days: 14
